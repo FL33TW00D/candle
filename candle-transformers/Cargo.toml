@@ -24,6 +24,8 @@ serde_json = { workspace = true }
 serde_plain = { workspace = true }
 tracing = { workspace = true }
 wav = { workspace = true }
+realfft = { version = "3.3.0" }
+anyhow = { workspace = true }
 
 [dev-dependencies]
 anyhow = { workspace = true }
