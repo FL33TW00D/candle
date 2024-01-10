@@ -1,3 +1,6 @@
+//Adapted from: https://github.com/tanmayb123/OpenAI-Whisper-CoreML
+#![cfg(feature = "audio")]
+
 use std::sync::Arc;
 
 use candle::{Device, Tensor, WithDType};
@@ -25,17 +28,16 @@ pub struct SpectrogramGenerator<F: Float> {
 }
 
 impl<F: Float> SpectrogramGenerator<F> {
-    pub fn new(mels: Vec<F>) -> Self {
+    pub fn new(mels: Vec<F>, n_mels: usize) -> Self {
         let mut planner = RealFftPlanner::new();
         Self {
             fft_plan: planner.plan_fft_forward(N_FFT),
             hann_window: Self::hann_window(),
-            mels: Tensor::from_vec(mels, (80, N_FFT / 2 + 1), &candle::Device::Cpu).unwrap(),
+            mels: Tensor::from_vec(mels, (n_mels, N_FFT / 2 + 1), &candle::Device::Cpu).unwrap(),
         }
     }
 
     fn hann_window() -> Vec<F> {
-        println!("Hann window");
         let two_pi = F::PI() + F::PI();
         let half = F::from(0.5).unwrap();
         let one = F::from(1.0).unwrap();
@@ -49,7 +51,6 @@ impl<F: Float> SpectrogramGenerator<F> {
     fn fft(&self, audio: &[F]) -> Vec<Complex<F>> {
         let mut input = audio.to_vec();
 
-        // Apply Hann window
         for i in 0..N_FFT {
             input[i] *= self.hann_window[i];
         }
@@ -62,9 +63,9 @@ impl<F: Float> SpectrogramGenerator<F> {
     }
 
     fn mel_spectrogram(&self, audio: &[F]) -> Vec<F> {
-        println!("Mel spectrogram");
         let f4 = F::from(4.0).unwrap();
         let f8 = F::from(8.0).unwrap();
+
         let n_frames = (audio.len() - N_FFT) / HOP_LENGTH;
         let right_padding = N_SAMPLES + FFT_PAD; //padding is all 0s, so we can ignore it
 
@@ -84,12 +85,9 @@ impl<F: Float> SpectrogramGenerator<F> {
         let spec_t = Tensor::from_vec(flattened, (N_FFT / 2 + 1, n_frames), &Device::Cpu).unwrap();
 
         let mel_spec = self.mels.matmul(&spec_t).unwrap();
-        let mut mel_spec_v = mel_spec
-            .to_vec2::<F>()
-            .unwrap()
-            .into_iter()
-            .flatten()
-            .collect::<Vec<F>>();
+
+        //Moving the below to tensor operations would be optimal
+        let mut mel_spec_v = mel_spec.flatten_all().unwrap().to_vec1::<F>().unwrap();
         for v in mel_spec_v.iter_mut() {
             *v = <F as num_traits::Float>::max(*v, F::from(1e-10).unwrap()).log10();
         }
@@ -129,8 +127,7 @@ impl<F: Float> SpectrogramGenerator<F> {
 }
 
 pub fn pcm_to_mel<F: Float>(cfg: &super::Config, samples: &[F], filters: &[F]) -> Vec<F> {
-    println!("Input samples length: {}", samples.len());
-    let generator = SpectrogramGenerator::new(filters.to_vec());
+    let generator = SpectrogramGenerator::new(filters.to_vec(), cfg.num_mel_bins);
     generator.generate(samples.to_vec())
 }
 
@@ -142,29 +139,39 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn test_log_mel() -> Result<(), anyhow::Error> {
+    fn load_mels() -> Vec<f32> {
         let mel_bytes = include_bytes!("melfilters.bytes").as_slice();
         let mut mel_filters = vec![0f32; mel_bytes.len() / 4];
         <byteorder::LittleEndian as byteorder::ByteOrder>::read_f32_into(
             mel_bytes,
             &mut mel_filters,
         );
+        mel_filters
+    }
 
+    fn load_audio() -> Vec<f32> {
         let mut input = std::fs::File::open("./src/models/whisper/gb0.wav").unwrap();
         let (header, data) = wav::read(&mut input).unwrap();
         if header.sampling_rate != SAMPLE_RATE as u32 {
-            anyhow::bail!("wav file must have a {} sampling rate", SAMPLE_RATE)
+            panic!("wav file must have a {} sampling rate", SAMPLE_RATE)
         }
         let data = data.as_sixteen().expect("expected 16 bit wav file");
         let pcm_data: Vec<_> = data[..data.len() / header.channel_count as usize]
             .iter()
             .map(|v| *v as f32 / 32768.)
             .collect();
+        pcm_data
+    }
 
-        let config: Config = serde_json::from_str(&std::fs::read_to_string(
-            "./src/models/whisper/config.json",
-        )?)?;
+    #[test]
+    fn test_log_mel() {
+        let mel_filters = load_mels();
+        let pcm_data = load_audio();
+
+        let config: Config = serde_json::from_str(
+            &std::fs::read_to_string("./src/models/whisper/config.json").unwrap(),
+        )
+        .unwrap();
 
         let mel = pcm_to_mel(&config, &pcm_data, &mel_filters);
         let mel_len = mel.len();
@@ -172,14 +179,12 @@ mod tests {
             mel,
             (1, config.num_mel_bins, mel_len / config.num_mel_bins),
             &candle::Device::Cpu,
-        )?;
-        let mut ground = Tensor::read_npy(Path::new("./src/models/whisper/ground.npy")).unwrap();
-        ground = ground.unsqueeze(0)?;
-        println!("Ground: {}", ground);
-        println!("Mel: {}", mel);
-
+        )
+        .unwrap();
+        let ground = Tensor::read_npy(Path::new("./src/models/whisper/ground.npy"))
+            .unwrap()
+            .unsqueeze(0)
+            .unwrap();
         assert!(mel.all_close(&ground, 1e-4).unwrap());
-
-        Ok(())
     }
 }
