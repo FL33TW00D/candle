@@ -1081,8 +1081,8 @@ fn randn(device: &Device) -> Result<()> {
 fn allclose(device: &Device) -> Result<()> {
     let t1 = Tensor::new(&[1.0004_f32, 1.0005], device)?;
     let t2 = Tensor::new(&[1.0005_f32, 1.0004], device)?;
-    let x = t1.allclose(&t2, 0.001)?;
-    let y = t1.allclose(&t2, 0.00001)?;
+    let x = t1.all_close(&t2, 0.001)?;
+    let y = t1.all_close(&t2, 0.00001)?;
     assert_eq!(x, true);
     assert_eq!(y, false);
     Ok(())
