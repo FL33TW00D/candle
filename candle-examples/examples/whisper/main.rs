@@ -9,6 +9,8 @@ extern crate accelerate_src;
 #[cfg(feature = "mkl")]
 extern crate intel_mkl_src;
 
+use std::path::Path;
+
 use anyhow::{Error as E, Result};
 use candle::{Device, IndexOp, Tensor};
 use candle_nn::{ops::softmax, VarBuilder};
@@ -179,6 +181,7 @@ impl Decoder {
             // The model expects a batch dim but this inference loop does not handle
             // it so we add it at this point.
             let tokens_t = tokens_t.unsqueeze(0)?;
+            println!("Decoder input tokens: {}", tokens_t);
             let ys = model.decoder_forward(&tokens_t, &audio_features, i == 0)?;
 
             // Extract the no speech probability on the first iteration by looking at the first
@@ -330,7 +333,7 @@ impl Decoder {
                 )
             }
             if self.verbose {
-                println!("{seek}: {segment:?}, in {:?}", start.elapsed());
+                println!("{seek}: {segment:?}, in {:?}\n", start.elapsed());
             }
             segments.push(segment)
         }
@@ -462,6 +465,35 @@ struct Args {
     /// Print the full DecodingResult structure rather than just the text.
     #[arg(long)]
     verbose: bool,
+
+    #[arg(long)]
+    test: bool,
+}
+
+fn test(config: Config) -> Result<()> {
+    let mel_bytes = match config.num_mel_bins {
+        80 => include_bytes!("melfilters.bytes").as_slice(),
+        128 => include_bytes!("melfilters128.bytes").as_slice(),
+        nmel => anyhow::bail!("unexpected num_mel_bins {nmel}"),
+    };
+    let mut mel_filters = vec![0f32; mel_bytes.len() / 4];
+    <byteorder::LittleEndian as byteorder::ByteOrder>::read_f32_into(mel_bytes, &mut mel_filters);
+
+    let mut input = std::fs::File::open("gb0.wav").unwrap();
+    let (header, data) = wav::read(&mut input).unwrap();
+    println!("loaded wav data: {header:?}");
+    if header.sampling_rate != m::SAMPLE_RATE as u32 {
+        anyhow::bail!("wav file must have a {} sampling rate", m::SAMPLE_RATE)
+    }
+    let data = data.as_sixteen().expect("expected 16 bit wav file");
+    let pcm_data: Vec<_> = data[..data.len() / header.channel_count as usize]
+        .iter()
+        .map(|v| *v as f32 / 32768.)
+        .collect();
+    println!("pcm data loaded {}", pcm_data.len());
+    let mel = audio::pcm_to_mel(&config, &pcm_data, &mel_filters);
+    let ground = Tensor::read_npy(Path::new("gb0.npy")).unwrap();
+    Ok(())
 }
 
 fn main() -> Result<()> {
@@ -525,6 +557,9 @@ fn main() -> Result<()> {
         (config, tokenizer, model, sample)
     };
     let config: Config = serde_json::from_str(&std::fs::read_to_string(config_filename)?)?;
+    if args.test {
+        return test(config);
+    }
     let tokenizer = Tokenizer::from_file(tokenizer_filename).map_err(E::msg)?;
 
     let mel_bytes = match config.num_mel_bins {
