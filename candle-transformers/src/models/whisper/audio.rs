@@ -1,5 +1,5 @@
-//Adapted from: https://github.com/tanmayb123/OpenAI-Whisper-CoreML
 #![cfg(feature = "audio")]
+//Adapted from: https://github.com/tanmayb123/OpenAI-Whisper-CoreML
 
 use std::sync::Arc;
 
@@ -133,9 +133,13 @@ pub fn pcm_to_mel<F: Float>(cfg: &super::Config, samples: &[F], filters: &[F]) -
 
 #[cfg(test)]
 mod tests {
+    use hf_hub::{
+        api::sync::{Api, ApiRepo},
+        Repo, RepoType,
+    };
     use std::path::Path;
 
-    use candle::Tensor;
+    use candle::{Result, Tensor};
 
     use super::*;
 
@@ -149,9 +153,9 @@ mod tests {
         mel_filters
     }
 
-    fn load_audio() -> Vec<f32> {
-        let mut input = std::fs::File::open("./src/models/whisper/gb0.wav").unwrap();
-        let (header, data) = wav::read(&mut input).unwrap();
+    fn load_audio(dataset: ApiRepo) -> Result<Vec<f32>> {
+        let mut input = std::fs::File::open(dataset.get("samples_gb0.wav").unwrap())?;
+        let (header, data) = wav::read(&mut input)?;
         if header.sampling_rate != SAMPLE_RATE as u32 {
             panic!("wav file must have a {} sampling rate", SAMPLE_RATE)
         }
@@ -160,16 +164,24 @@ mod tests {
             .iter()
             .map(|v| *v as f32 / 32768.)
             .collect();
-        pcm_data
+        Ok(pcm_data)
     }
 
     #[test]
-    fn test_log_mel() {
+    fn test_log_mel() -> Result<()> {
         let mel_filters = load_mels();
-        let pcm_data = load_audio();
+
+        let api = Api::new().unwrap();
+        let dataset = api.dataset("Narsil/candle-examples".to_string());
+        let repo = api.repo(Repo::with_revision(
+            String::from("openai/whisper-tiny.en"),
+            RepoType::Model,
+            String::from("refs/pr/15"),
+        ));
+        let pcm_data = load_audio(dataset).unwrap();
 
         let config: Config = serde_json::from_str(
-            &std::fs::read_to_string("./src/models/whisper/config.json").unwrap(),
+            &std::fs::read_to_string(repo.get("config.json").unwrap()).unwrap(),
         )
         .unwrap();
 
@@ -186,5 +198,6 @@ mod tests {
             .unsqueeze(0)
             .unwrap();
         assert!(mel.all_close(&ground, 1e-4).unwrap());
+        Ok(())
     }
 }

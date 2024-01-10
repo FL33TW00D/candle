@@ -28,9 +28,10 @@ realfft = { version = "3.3.0", optional = true }
 
 [dev-dependencies]
 anyhow = { workspace = true }
+hf-hub = { workspace = true }
 
 [features]
-default = []
+default = ["audio"]
 accelerate = ["dep:accelerate-src", "candle/accelerate", "candle-nn/accelerate"]
 cuda = ["candle/cuda", "candle-nn/cuda"]
 flash-attn = ["cuda", "dep:candle-flash-attn"]
